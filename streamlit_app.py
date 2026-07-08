@@ -240,22 +240,30 @@ market_f = apply_global_filters(market)
 monthly_f = apply_global_filters(monthly)
 
 # -----------------------------
-# Tabs
+# Tab-style page navigation
 # -----------------------------
 
-tabs = st.tabs([
+page_options = [
     "Executive Summary",
     "OA1: Absorption Intelligence",
     "OA2: Geographic Prioritization",
     "Model Validation",
     "Market Drilldown"
-])
+]
+
+selected_page = st.radio(
+    "Dashboard Section",
+    page_options,
+    key="selected_page",
+    horizontal=True,
+    label_visibility="collapsed"
+)
 
 # ============================================================
 # Executive Summary
 # ============================================================
 
-with tabs[0]:
+if selected_page == "Executive Summary":
     st.header("Executive Summary")
 
     kpi_df = geo_f if not geo_f.empty else market_f
@@ -344,7 +352,7 @@ with tabs[0]:
 # OA1: Absorption Intelligence
 # ============================================================
 
-with tabs[1]:
+if selected_page == "OA1: Absorption Intelligence":
     st.header("Opportunity Area #1 — Absorption Rate Intelligence")
     st.write(
         "This page answers where Lagom's \\$200K–\\$300K product is moving fastest today "
@@ -419,7 +427,7 @@ with tabs[1]:
 # OA2: Geographic Prioritization
 # ============================================================
 
-with tabs[2]:
+if selected_page == "OA2: Geographic Prioritization":
     st.header("Opportunity Area #2 — Geographic Market Prioritization")
     st.write(
         "This page answers which metros and counties deserve Lagom's first marketing dollar "
@@ -497,7 +505,7 @@ with tabs[2]:
 # Model Validation
 # ============================================================
 
-with tabs[3]:
+if selected_page == "Model Validation":
     st.header("Model Validation")
     st.write(
         "This page validates the prioritization framework using supervised classifiers "
@@ -559,7 +567,7 @@ with tabs[3]:
 # Market Drilldown
 # ============================================================
 
-with tabs[4]:
+if selected_page == "Market Drilldown":
     st.header("Market Drilldown")
 
     drill_source = geo if not geo.empty else market

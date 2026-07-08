@@ -1,0 +1,4 @@
+model,accuracy,precision,recall,f1_score
+Logistic Regression,0.95,0.6666666666666666,1.0,0.8
+KNN Classifier,0.9625,1.0,0.625,0.7692307692307693
+XGBoost Classifier,0.9375,0.8,0.5,0.6153846153846154

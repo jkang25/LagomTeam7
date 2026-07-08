@@ -1,0 +1,640 @@
+<html>
+<head>
+<title>Lagom_Absorption_Rate_Engine_FORECAST_FIXED_v2.ipynb</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #7a7e85;}
+.s1 { color: #bcbec4;}
+.s2 { color: #cf8e6d;}
+.s3 { color: #bcbec4;}
+.s4 { color: #6aab73;}
+.s5 { color: #2aacb8;}
+.ls0 { height: 1px; border-width: 0; color: #43454a; background-color:#43454a}
+</style>
+</head>
+<body bgcolor="#1e1f22">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+Lagom_Absorption_Rate_Engine_FORECAST_FIXED_v2.ipynb</font>
+</center></td></tr></table>
+<pre><span class="s0">#%% md 
+</span><span class="s1"># Lagom Absorption Rate Engine 
+ 
+This notebook calculates absorption rate and months of supply, filters to Lagom's target $200K-$300K price range and target states, summarizes markets at the CBSA/metro + price-band level, analyzes historical absorption trends, and builds a model to score high-potential markets. <hr class="ls0"></span><span class="s0">#%% 
+</span><span class="s2">import </span><span class="s1">numpy </span><span class="s2">as </span><span class="s1">np</span>
+<span class="s2">import </span><span class="s1">pandas </span><span class="s2">as </span><span class="s1">pd</span>
+<span class="s2">import </span><span class="s1">matplotlib</span><span class="s3">.</span><span class="s1">pyplot </span><span class="s2">as </span><span class="s1">plt</span>
+
+<span class="s2">from </span><span class="s1">sklearn</span><span class="s3">.</span><span class="s1">model_selection </span><span class="s2">import </span><span class="s1">train_test_split</span>
+<span class="s2">from </span><span class="s1">sklearn</span><span class="s3">.</span><span class="s1">metrics </span><span class="s2">import </span><span class="s1">mean_absolute_error</span><span class="s3">, </span><span class="s1">mean_squared_error</span><span class="s3">, </span><span class="s1">r2_score</span>
+<span class="s2">from </span><span class="s1">sklearn</span><span class="s3">.</span><span class="s1">linear_model </span><span class="s2">import </span><span class="s1">LinearRegression</span>
+<span class="s2">from </span><span class="s1">sklearn</span><span class="s3">.</span><span class="s1">ensemble </span><span class="s2">import </span><span class="s1">RandomForestRegressor</span><span class="s3">, </span><span class="s1">GradientBoostingRegressor</span>
+<span class="s2">from </span><span class="s1">sklearn</span><span class="s3">.</span><span class="s1">tree </span><span class="s2">import </span><span class="s1">DecisionTreeRegressor</span>
+<span class="s2">from </span><span class="s1">sklearn</span><span class="s3">.</span><span class="s1">base </span><span class="s2">import </span><span class="s1">clone</span>
+<span class="s2">from </span><span class="s1">IPython</span><span class="s3">.</span><span class="s1">display </span><span class="s2">import </span><span class="s1">display</span>
+<hr class="ls0"><span class="s0">#%% md 
+</span><span class="s1">## 1. Load and merge source data <hr class="ls0"></span><span class="s0">#%% 
+# Read in data sets</span>
+<span class="s0"># These files are stored in the Lagom GCP bucket.</span>
+<span class="s1">df_counties </span><span class="s3">= </span><span class="s1">pd</span><span class="s3">.</span><span class="s1">read_excel</span><span class="s3">(</span>
+    <span class="s4">&quot;https://storage.googleapis.com/lagom-omsa/raw_data/US%20Counties.xlsx&quot;</span>
+<span class="s3">)</span>
+
+<span class="s1">df_redfin </span><span class="s3">= </span><span class="s1">pd</span><span class="s3">.</span><span class="s1">read_csv</span><span class="s3">(</span>
+    <span class="s4">&quot;https://storage.googleapis.com/lagom-omsa/raw_data/redfin_weekly_housing_market_data_most_recent.csv&quot;</span>
+<span class="s3">)</span>
+
+<span class="s1">df_realtor </span><span class="s3">= </span><span class="s1">pd</span><span class="s3">.</span><span class="s1">read_csv</span><span class="s3">(</span>
+    <span class="s4">&quot;https://storage.googleapis.com/lagom-omsa/raw_data/realtor_Inventory_Hotness_Metrics_County_History.csv&quot;</span>
+<span class="s3">)</span>
+
+<span class="s0"># Keep only Redfin county-level records.</span>
+<span class="s1">df_redfin_county </span><span class="s3">= </span><span class="s1">df_redfin</span><span class="s3">[</span><span class="s1">df_redfin</span><span class="s3">[</span><span class="s4">'REGION_TYPE'</span><span class="s3">] == </span><span class="s4">'county'</span><span class="s3">].</span><span class="s1">copy</span><span class="s3">()</span>
+
+<span class="s0"># Split Redfin region name into county and state.</span>
+<span class="s1">df_redfin_county</span><span class="s3">[[</span><span class="s4">'county'</span><span class="s3">, </span><span class="s4">'state'</span><span class="s3">]] = </span><span class="s1">df_redfin_county</span><span class="s3">[</span><span class="s4">'REGION_NAME'</span><span class="s3">].</span><span class="s1">str</span><span class="s3">.</span><span class="s1">extract</span><span class="s3">(</span>
+    <span class="s4">r'^(.*) County, ([A-Z]{2})$'</span>
+<span class="s3">)</span>
+
+<span class="s0"># Create a common county/state key for joining Redfin and Realtor.com data.</span>
+<span class="s1">df_redfin_county</span><span class="s3">[</span><span class="s4">'county_state'</span><span class="s3">] = (</span>
+    <span class="s1">df_redfin_county</span><span class="s3">[</span><span class="s4">'county'</span><span class="s3">].</span><span class="s1">str</span><span class="s3">.</span><span class="s1">lower</span><span class="s3">() + </span><span class="s4">', ' </span><span class="s3">+ </span><span class="s1">df_redfin_county</span><span class="s3">[</span><span class="s4">'state'</span><span class="s3">].</span><span class="s1">str</span><span class="s3">.</span><span class="s1">lower</span><span class="s3">()</span>
+<span class="s3">)</span>
+
+<span class="s1">df_realtor</span><span class="s3">[</span><span class="s4">'county_state'</span><span class="s3">] = </span><span class="s1">df_realtor</span><span class="s3">[</span><span class="s4">'county_name'</span><span class="s3">].</span><span class="s1">str</span><span class="s3">.</span><span class="s1">lower</span><span class="s3">()</span>
+
+<span class="s0"># Convert Redfin weekly dates to YYYYMM month format so they can be joined to Realtor monthly data.</span>
+<span class="s1">df_redfin_county</span><span class="s3">[</span><span class="s4">'month_date_yyyymm'</span><span class="s3">] = </span><span class="s1">pd</span><span class="s3">.</span><span class="s1">to_datetime</span><span class="s3">(</span>
+    <span class="s1">df_redfin_county</span><span class="s3">[</span><span class="s4">'PERIOD_BEGIN'</span><span class="s3">]</span>
+<span class="s3">).</span><span class="s1">dt</span><span class="s3">.</span><span class="s1">strftime</span><span class="s3">(</span><span class="s4">'%Y%m'</span><span class="s3">)</span>
+
+<span class="s1">df_redfin_county</span><span class="s3">[</span><span class="s4">'month_date_yyyymm'</span><span class="s3">] = </span><span class="s1">df_redfin_county</span><span class="s3">[</span><span class="s4">'month_date_yyyymm'</span><span class="s3">].</span><span class="s1">astype</span><span class="s3">(</span><span class="s1">str</span><span class="s3">)</span>
+<span class="s1">df_realtor</span><span class="s3">[</span><span class="s4">'month_date_yyyymm'</span><span class="s3">] = </span><span class="s1">df_realtor</span><span class="s3">[</span><span class="s4">'month_date_yyyymm'</span><span class="s3">].</span><span class="s1">astype</span><span class="s3">(</span><span class="s1">str</span><span class="s3">)</span>
+
+<span class="s0"># Aggregate Redfin weekly data to county-month level.</span>
+<span class="s1">df_redfin_agg </span><span class="s3">= </span><span class="s1">df_redfin_county</span><span class="s3">.</span><span class="s1">groupby</span><span class="s3">(</span>
+    <span class="s3">[</span><span class="s4">'county_state'</span><span class="s3">, </span><span class="s4">'month_date_yyyymm'</span><span class="s3">],</span>
+    <span class="s1">as_index</span><span class="s3">=</span><span class="s2">False</span>
+<span class="s3">).</span><span class="s1">mean</span><span class="s3">(</span><span class="s1">numeric_only</span><span class="s3">=</span><span class="s2">True</span><span class="s3">)</span>
+
+<span class="s0"># Merge Redfin and Realtor.com county-month data.</span>
+<span class="s1">merged </span><span class="s3">= </span><span class="s1">pd</span><span class="s3">.</span><span class="s1">merge</span><span class="s3">(</span>
+    <span class="s1">df_redfin_agg</span><span class="s3">,</span>
+    <span class="s1">df_realtor</span><span class="s3">,</span>
+    <span class="s1">on</span><span class="s3">=[</span><span class="s4">'county_state'</span><span class="s3">, </span><span class="s4">'month_date_yyyymm'</span><span class="s3">],</span>
+    <span class="s1">how</span><span class="s3">=</span><span class="s4">'inner'</span>
+<span class="s3">)</span>
+
+<span class="s0"># Remove duplicate county-month records if any remain.</span>
+<span class="s1">merged </span><span class="s3">= </span><span class="s1">merged</span><span class="s3">.</span><span class="s1">drop_duplicates</span><span class="s3">(</span><span class="s1">subset</span><span class="s3">=[</span><span class="s4">'county_state'</span><span class="s3">, </span><span class="s4">'month_date_yyyymm'</span><span class="s3">])</span>
+
+<span class="s1">print</span><span class="s3">(</span><span class="s1">merged</span><span class="s3">.</span><span class="s1">shape</span><span class="s3">)</span>
+<span class="s1">print</span><span class="s3">(</span><span class="s1">merged</span><span class="s3">[[</span><span class="s4">'county_state'</span><span class="s3">, </span><span class="s4">'month_date_yyyymm'</span><span class="s3">]].</span><span class="s1">head</span><span class="s3">(</span><span class="s5">25</span><span class="s3">))</span><hr class="ls0"><span class="s0">#%% md 
+</span><span class="s1">## 2. Create absorption metrics and price bands <hr class="ls0"></span><span class="s0">#%% 
+# Absorption rate measures how quickly available inventory is being sold.</span>
+<span class="s1">merged</span><span class="s3">[</span><span class="s4">'absorption_rate'</span><span class="s3">] = (</span>
+    <span class="s1">merged</span><span class="s3">[</span><span class="s4">'ADJUSTED_AVERAGE_HOMES_SOLD'</span><span class="s3">] /</span>
+    <span class="s1">merged</span><span class="s3">[</span><span class="s4">'ACTIVE_LISTINGS'</span><span class="s3">]</span>
+<span class="s3">) * </span><span class="s5">100</span>
+
+<span class="s0"># Months of supply estimates how many months it would take to sell current inventory.</span>
+<span class="s1">merged</span><span class="s3">[</span><span class="s4">'months_of_supply'</span><span class="s3">] = (</span>
+    <span class="s1">merged</span><span class="s3">[</span><span class="s4">'ACTIVE_LISTINGS'</span><span class="s3">] /</span>
+    <span class="s1">merged</span><span class="s3">[</span><span class="s4">'ADJUSTED_AVERAGE_HOMES_SOLD'</span><span class="s3">]</span>
+<span class="s3">)</span>
+
+<span class="s0"># Replace infinite values caused by divide-by-zero.</span>
+<span class="s1">merged </span><span class="s3">= </span><span class="s1">merged</span><span class="s3">.</span><span class="s1">replace</span><span class="s3">([</span><span class="s1">np</span><span class="s3">.</span><span class="s1">inf</span><span class="s3">, -</span><span class="s1">np</span><span class="s3">.</span><span class="s1">inf</span><span class="s3">], </span><span class="s1">np</span><span class="s3">.</span><span class="s1">nan</span><span class="s3">)</span>
+
+<span class="s0"># Convert YYYYMM field into a real monthly date.</span>
+<span class="s1">merged</span><span class="s3">[</span><span class="s4">'month_date'</span><span class="s3">] = </span><span class="s1">pd</span><span class="s3">.</span><span class="s1">to_datetime</span><span class="s3">(</span>
+    <span class="s1">merged</span><span class="s3">[</span><span class="s4">'month_date_yyyymm'</span><span class="s3">].</span><span class="s1">astype</span><span class="s3">(</span><span class="s1">str</span><span class="s3">),</span>
+    <span class="s1">format</span><span class="s3">=</span><span class="s4">'%Y%m'</span>
+<span class="s3">)</span>
+
+<span class="s0"># Create price bands for Lagom's attainable housing analysis.</span>
+<span class="s1">merged</span><span class="s3">[</span><span class="s4">'price_band'</span><span class="s3">] = </span><span class="s1">pd</span><span class="s3">.</span><span class="s1">cut</span><span class="s3">(</span>
+    <span class="s1">merged</span><span class="s3">[</span><span class="s4">'MEDIAN_SALE_PRICE'</span><span class="s3">],</span>
+    <span class="s1">bins</span><span class="s3">=[</span><span class="s5">0</span><span class="s3">, </span><span class="s5">200000</span><span class="s3">, </span><span class="s5">250000</span><span class="s3">, </span><span class="s5">300000</span><span class="s3">, </span><span class="s5">350000</span><span class="s3">, </span><span class="s1">float</span><span class="s3">(</span><span class="s4">'inf'</span><span class="s3">)],</span>
+    <span class="s1">labels</span><span class="s3">=[</span>
+        <span class="s4">'&lt;$200K'</span><span class="s3">,</span>
+        <span class="s4">'$200K-$250K'</span><span class="s3">,</span>
+        <span class="s4">'$250K-$300K'</span><span class="s3">,</span>
+        <span class="s4">'$300K-$350K'</span><span class="s3">,</span>
+        <span class="s4">'$350K+'</span>
+    <span class="s3">],</span>
+    <span class="s1">include_lowest</span><span class="s3">=</span><span class="s2">True</span>
+<span class="s3">)</span>
+
+<span class="s1">print</span><span class="s3">(</span><span class="s1">merged</span><span class="s3">[[</span><span class="s4">'county_state'</span><span class="s3">, </span><span class="s4">'month_date'</span><span class="s3">, </span><span class="s4">'MEDIAN_SALE_PRICE'</span><span class="s3">, </span><span class="s4">'price_band'</span><span class="s3">, </span><span class="s4">'absorption_rate'</span><span class="s3">, </span><span class="s4">'months_of_supply'</span><span class="s3">]].</span><span class="s1">head</span><span class="s3">())</span><hr class="ls0"><span class="s0">#%% md 
+</span><span class="s1">## 3. Filter to Lagom's target price band and target states <hr class="ls0"></span><span class="s0">#%% 
+# Keep Lagom's target price range: $200K-$300K.</span>
+<span class="s1">target_df </span><span class="s3">= </span><span class="s1">merged</span><span class="s3">[</span>
+    <span class="s1">merged</span><span class="s3">[</span><span class="s4">'price_band'</span><span class="s3">].</span><span class="s1">isin</span><span class="s3">([</span>
+        <span class="s4">'$200K-$250K'</span><span class="s3">,</span>
+        <span class="s4">'$250K-$300K'</span>
+    <span class="s3">])</span>
+<span class="s3">].</span><span class="s1">copy</span><span class="s3">()</span>
+
+<span class="s0"># Target states provided for the project.</span>
+<span class="s1">target_states </span><span class="s3">= [</span>
+    <span class="s4">'al'</span><span class="s3">, </span><span class="s4">'ar'</span><span class="s3">, </span><span class="s4">'fl'</span><span class="s3">, </span><span class="s4">'ga'</span><span class="s3">, </span><span class="s4">'ky'</span><span class="s3">,</span>
+    <span class="s4">'la'</span><span class="s3">, </span><span class="s4">'ms'</span><span class="s3">, </span><span class="s4">'mo'</span><span class="s3">, </span><span class="s4">'nc'</span><span class="s3">, </span><span class="s4">'sc'</span><span class="s3">,</span>
+    <span class="s4">'tn'</span><span class="s3">, </span><span class="s4">'va'</span><span class="s3">, </span><span class="s4">'wv'</span><span class="s3">, </span><span class="s4">'ks'</span><span class="s3">, </span><span class="s4">'ok'</span><span class="s3">, </span><span class="s4">'tx'</span>
+<span class="s3">]</span>
+
+<span class="s0"># Extract state abbreviation from county_state, which looks like &quot;county, st&quot;.</span>
+<span class="s1">target_df</span><span class="s3">[</span><span class="s4">'state'</span><span class="s3">] = (</span>
+    <span class="s1">target_df</span><span class="s3">[</span><span class="s4">'county_state'</span><span class="s3">]</span>
+    <span class="s3">.</span><span class="s1">str</span><span class="s3">.</span><span class="s1">split</span><span class="s3">(</span><span class="s4">','</span><span class="s3">)</span>
+    <span class="s3">.</span><span class="s1">str</span><span class="s3">[-</span><span class="s5">1</span><span class="s3">]</span>
+    <span class="s3">.</span><span class="s1">str</span><span class="s3">.</span><span class="s1">strip</span><span class="s3">()</span>
+    <span class="s3">.</span><span class="s1">str</span><span class="s3">.</span><span class="s1">lower</span><span class="s3">()</span>
+<span class="s3">)</span>
+
+<span class="s0"># Filter to target geography.</span>
+<span class="s1">target_df </span><span class="s3">= </span><span class="s1">target_df</span><span class="s3">[</span>
+    <span class="s1">target_df</span><span class="s3">[</span><span class="s4">'state'</span><span class="s3">].</span><span class="s1">isin</span><span class="s3">(</span><span class="s1">target_states</span><span class="s3">)</span>
+<span class="s3">].</span><span class="s1">copy</span><span class="s3">()</span>
+
+<span class="s1">print</span><span class="s3">(</span><span class="s1">target_df</span><span class="s3">.</span><span class="s1">shape</span><span class="s3">)</span>
+<span class="s1">print</span><span class="s3">(</span><span class="s1">target_df</span><span class="s3">[[</span><span class="s4">'county_state'</span><span class="s3">, </span><span class="s4">'state'</span><span class="s3">, </span><span class="s4">'price_band'</span><span class="s3">]].</span><span class="s1">head</span><span class="s3">())</span><hr class="ls0"><span class="s0">#%% md 
+</span><span class="s1">## 4. Aggregate to CBSA/metro + price-band + month level 
+ 
+CBSA is used as the primary market level because it represents metro housing markets. County is retained for drill-down analysis later. <hr class="ls0"></span><span class="s0">#%% 
+# Aggregate county rows up to CBSA/metro + price band + month.</span>
+<span class="s0"># For absorption and months of supply, calculate from summed homes sold and summed active listings.</span>
+<span class="s1">cbsa_monthly </span><span class="s3">= </span><span class="s1">target_df</span><span class="s3">.</span><span class="s1">groupby</span><span class="s3">(</span>
+    <span class="s3">[</span><span class="s4">'cbsa_title'</span><span class="s3">, </span><span class="s4">'price_band'</span><span class="s3">, </span><span class="s4">'month_date'</span><span class="s3">],</span>
+    <span class="s1">observed</span><span class="s3">=</span><span class="s2">True</span>
+<span class="s3">).</span><span class="s1">agg</span><span class="s3">(</span>
+    <span class="s1">states</span><span class="s3">=(</span><span class="s4">'state'</span><span class="s3">, </span><span class="s2">lambda </span><span class="s1">x</span><span class="s3">: </span><span class="s4">', '</span><span class="s3">.</span><span class="s1">join</span><span class="s3">(</span><span class="s1">sorted</span><span class="s3">(</span><span class="s1">x</span><span class="s3">.</span><span class="s1">dropna</span><span class="s3">().</span><span class="s1">unique</span><span class="s3">()))),</span>
+    <span class="s1">avg_median_sale_price</span><span class="s3">=(</span><span class="s4">'MEDIAN_SALE_PRICE'</span><span class="s3">, </span><span class="s4">'mean'</span><span class="s3">),</span>
+    <span class="s1">active_listings</span><span class="s3">=(</span><span class="s4">'ACTIVE_LISTINGS'</span><span class="s3">, </span><span class="s4">'sum'</span><span class="s3">),</span>
+    <span class="s1">homes_sold</span><span class="s3">=(</span><span class="s4">'ADJUSTED_AVERAGE_HOMES_SOLD'</span><span class="s3">, </span><span class="s4">'sum'</span><span class="s3">),</span>
+    <span class="s1">median_days_on_market</span><span class="s3">=(</span><span class="s4">'MEDIAN_DAYS_ON_MARKET'</span><span class="s3">, </span><span class="s4">'mean'</span><span class="s3">),</span>
+    <span class="s1">hotness_score</span><span class="s3">=(</span><span class="s4">'hotness_score'</span><span class="s3">, </span><span class="s4">'mean'</span><span class="s3">),</span>
+    <span class="s1">demand_score</span><span class="s3">=(</span><span class="s4">'demand_score'</span><span class="s3">, </span><span class="s4">'mean'</span><span class="s3">),</span>
+    <span class="s1">supply_score</span><span class="s3">=(</span><span class="s4">'supply_score'</span><span class="s3">, </span><span class="s4">'mean'</span><span class="s3">)</span>
+<span class="s3">).</span><span class="s1">reset_index</span><span class="s3">()</span>
+
+<span class="s1">cbsa_monthly</span><span class="s3">[</span><span class="s4">'absorption_rate'</span><span class="s3">] = (</span>
+    <span class="s1">cbsa_monthly</span><span class="s3">[</span><span class="s4">'homes_sold'</span><span class="s3">] /</span>
+    <span class="s1">cbsa_monthly</span><span class="s3">[</span><span class="s4">'active_listings'</span><span class="s3">]</span>
+<span class="s3">) * </span><span class="s5">100</span>
+
+<span class="s1">cbsa_monthly</span><span class="s3">[</span><span class="s4">'months_of_supply'</span><span class="s3">] = (</span>
+    <span class="s1">cbsa_monthly</span><span class="s3">[</span><span class="s4">'active_listings'</span><span class="s3">] /</span>
+    <span class="s1">cbsa_monthly</span><span class="s3">[</span><span class="s4">'homes_sold'</span><span class="s3">]</span>
+<span class="s3">)</span>
+
+<span class="s1">cbsa_monthly </span><span class="s3">= </span><span class="s1">cbsa_monthly</span><span class="s3">.</span><span class="s1">replace</span><span class="s3">([</span><span class="s1">np</span><span class="s3">.</span><span class="s1">inf</span><span class="s3">, -</span><span class="s1">np</span><span class="s3">.</span><span class="s1">inf</span><span class="s3">], </span><span class="s1">np</span><span class="s3">.</span><span class="s1">nan</span><span class="s3">)</span>
+
+<span class="s1">print</span><span class="s3">(</span><span class="s1">cbsa_monthly</span><span class="s3">.</span><span class="s1">head</span><span class="s3">())</span><hr class="ls0"><span class="s0">#%% md 
+</span><span class="s1">## 5. CBSA + price-band summary <hr class="ls0"></span><span class="s0">#%% 
+</span><span class="s1">cbsa_price_summary </span><span class="s3">= </span><span class="s1">cbsa_monthly</span><span class="s3">.</span><span class="s1">groupby</span><span class="s3">(</span>
+    <span class="s3">[</span><span class="s4">'cbsa_title'</span><span class="s3">, </span><span class="s4">'price_band'</span><span class="s3">],</span>
+    <span class="s1">observed</span><span class="s3">=</span><span class="s2">True</span>
+<span class="s3">).</span><span class="s1">agg</span><span class="s3">(</span>
+    <span class="s1">states</span><span class="s3">=(</span><span class="s4">'states'</span><span class="s3">, </span><span class="s4">'first'</span><span class="s3">),</span>
+    <span class="s1">avg_absorption_rate</span><span class="s3">=(</span><span class="s4">'absorption_rate'</span><span class="s3">, </span><span class="s4">'mean'</span><span class="s3">),</span>
+    <span class="s1">avg_months_of_supply</span><span class="s3">=(</span><span class="s4">'months_of_supply'</span><span class="s3">, </span><span class="s4">'mean'</span><span class="s3">),</span>
+    <span class="s1">avg_sale_price</span><span class="s3">=(</span><span class="s4">'avg_median_sale_price'</span><span class="s3">, </span><span class="s4">'mean'</span><span class="s3">),</span>
+    <span class="s1">avg_active_listings</span><span class="s3">=(</span><span class="s4">'active_listings'</span><span class="s3">, </span><span class="s4">'mean'</span><span class="s3">),</span>
+    <span class="s1">avg_homes_sold</span><span class="s3">=(</span><span class="s4">'homes_sold'</span><span class="s3">, </span><span class="s4">'mean'</span><span class="s3">),</span>
+    <span class="s1">latest_month</span><span class="s3">=(</span><span class="s4">'month_date'</span><span class="s3">, </span><span class="s4">'max'</span><span class="s3">)</span>
+<span class="s3">).</span><span class="s1">reset_index</span><span class="s3">()</span>
+
+<span class="s1">print</span><span class="s3">(</span><span class="s1">cbsa_price_summary</span><span class="s3">.</span><span class="s1">head</span><span class="s3">())</span>
+
+<span class="s0"># Need to sort by avg_absorption_rate desc</span><hr class="ls0"><span class="s0">#%% md 
+</span><span class="s1">## 6. Fastest-moving markets today <hr class="ls0"></span><span class="s0">#%% 
+</span><span class="s1">latest_month </span><span class="s3">= </span><span class="s1">cbsa_monthly</span><span class="s3">[</span><span class="s4">'month_date'</span><span class="s3">].</span><span class="s1">max</span><span class="s3">()</span>
+
+<span class="s1">latest_markets </span><span class="s3">= </span><span class="s1">cbsa_monthly</span><span class="s3">[</span>
+    <span class="s1">cbsa_monthly</span><span class="s3">[</span><span class="s4">'month_date'</span><span class="s3">] == </span><span class="s1">latest_month</span>
+<span class="s3">].</span><span class="s1">copy</span><span class="s3">()</span>
+
+<span class="s1">top_current_markets </span><span class="s3">= </span><span class="s1">latest_markets</span><span class="s3">.</span><span class="s1">sort_values</span><span class="s3">(</span>
+    <span class="s1">by</span><span class="s3">=</span><span class="s4">'absorption_rate'</span><span class="s3">,</span>
+    <span class="s1">ascending</span><span class="s3">=</span><span class="s2">False</span>
+<span class="s3">)</span>
+
+<span class="s1">print</span><span class="s3">(</span><span class="s4">&quot;Top Current Markets in $200K-$300K Band&quot;</span><span class="s3">)</span>
+<span class="s1">print</span><span class="s3">(</span><span class="s1">top_current_markets</span><span class="s3">[[</span>
+    <span class="s4">'cbsa_title'</span><span class="s3">,</span>
+    <span class="s4">'states'</span><span class="s3">,</span>
+    <span class="s4">'price_band'</span><span class="s3">,</span>
+    <span class="s4">'avg_median_sale_price'</span><span class="s3">,</span>
+    <span class="s4">'active_listings'</span><span class="s3">,</span>
+    <span class="s4">'homes_sold'</span><span class="s3">,</span>
+    <span class="s4">'absorption_rate'</span><span class="s3">,</span>
+    <span class="s4">'months_of_supply'</span>
+<span class="s3">]].</span><span class="s1">head</span><span class="s3">(</span><span class="s5">20</span><span class="s3">))</span><hr class="ls0"><span class="s0">#%% md 
+</span><span class="s1">## 7. Rolling-window trend analysis 
+ 
+A 12-month average captures recent market performance, while a 24-month average captures longer-term performance. Absorption velocity is defined as the 12-month average minus the 24-month average. Positive values suggest recent absorption is stronger than the longer-term baseline. <hr class="ls0"></span><span class="s0">#%% 
+</span><span class="s1">cbsa_monthly </span><span class="s3">= </span><span class="s1">cbsa_monthly</span><span class="s3">.</span><span class="s1">sort_values</span><span class="s3">(</span>
+    <span class="s1">by</span><span class="s3">=[</span><span class="s4">'cbsa_title'</span><span class="s3">, </span><span class="s4">'price_band'</span><span class="s3">, </span><span class="s4">'month_date'</span><span class="s3">]</span>
+<span class="s3">)</span>
+
+<span class="s1">cbsa_monthly</span><span class="s3">[</span><span class="s4">'absorption_12mo_avg'</span><span class="s3">] = </span><span class="s1">cbsa_monthly</span><span class="s3">.</span><span class="s1">groupby</span><span class="s3">(</span>
+    <span class="s3">[</span><span class="s4">'cbsa_title'</span><span class="s3">, </span><span class="s4">'price_band'</span><span class="s3">],</span>
+    <span class="s1">observed</span><span class="s3">=</span><span class="s2">True</span>
+<span class="s3">)[</span><span class="s4">'absorption_rate'</span><span class="s3">].</span><span class="s1">transform</span><span class="s3">(</span>
+    <span class="s2">lambda </span><span class="s1">x</span><span class="s3">: </span><span class="s1">x</span><span class="s3">.</span><span class="s1">rolling</span><span class="s3">(</span><span class="s1">window</span><span class="s3">=</span><span class="s5">12</span><span class="s3">, </span><span class="s1">min_periods</span><span class="s3">=</span><span class="s5">6</span><span class="s3">).</span><span class="s1">mean</span><span class="s3">()</span>
+<span class="s3">)</span>
+
+<span class="s1">cbsa_monthly</span><span class="s3">[</span><span class="s4">'absorption_24mo_avg'</span><span class="s3">] = </span><span class="s1">cbsa_monthly</span><span class="s3">.</span><span class="s1">groupby</span><span class="s3">(</span>
+    <span class="s3">[</span><span class="s4">'cbsa_title'</span><span class="s3">, </span><span class="s4">'price_band'</span><span class="s3">],</span>
+    <span class="s1">observed</span><span class="s3">=</span><span class="s2">True</span>
+<span class="s3">)[</span><span class="s4">'absorption_rate'</span><span class="s3">].</span><span class="s1">transform</span><span class="s3">(</span>
+    <span class="s2">lambda </span><span class="s1">x</span><span class="s3">: </span><span class="s1">x</span><span class="s3">.</span><span class="s1">rolling</span><span class="s3">(</span><span class="s1">window</span><span class="s3">=</span><span class="s5">24</span><span class="s3">, </span><span class="s1">min_periods</span><span class="s3">=</span><span class="s5">12</span><span class="s3">).</span><span class="s1">mean</span><span class="s3">()</span>
+<span class="s3">)</span>
+
+<span class="s1">cbsa_monthly</span><span class="s3">[</span><span class="s4">'absorption_velocity'</span><span class="s3">] = (</span>
+    <span class="s1">cbsa_monthly</span><span class="s3">[</span><span class="s4">'absorption_12mo_avg'</span><span class="s3">] -</span>
+    <span class="s1">cbsa_monthly</span><span class="s3">[</span><span class="s4">'absorption_24mo_avg'</span><span class="s3">]</span>
+<span class="s3">)</span>
+
+<span class="s1">print</span><span class="s3">(</span><span class="s1">cbsa_monthly</span><span class="s3">[[</span>
+    <span class="s4">'cbsa_title'</span><span class="s3">,</span>
+    <span class="s4">'price_band'</span><span class="s3">,</span>
+    <span class="s4">'month_date'</span><span class="s3">,</span>
+    <span class="s4">'absorption_rate'</span><span class="s3">,</span>
+    <span class="s4">'absorption_12mo_avg'</span><span class="s3">,</span>
+    <span class="s4">'absorption_24mo_avg'</span><span class="s3">,</span>
+    <span class="s4">'absorption_velocity'</span>
+<span class="s3">]].</span><span class="s1">tail</span><span class="s3">())</span><hr class="ls0"><span class="s0">#%% 
+# =====================================================</span>
+<span class="s0"># CREATE FUTURE ABSORPTION TARGETS</span>
+<span class="s0"># =====================================================</span>
+
+<span class="s1">cbsa_monthly </span><span class="s3">= </span><span class="s1">cbsa_monthly</span><span class="s3">.</span><span class="s1">sort_values</span><span class="s3">(</span>
+    <span class="s1">by</span><span class="s3">=[</span><span class="s4">'cbsa_title'</span><span class="s3">, </span><span class="s4">'price_band'</span><span class="s3">, </span><span class="s4">'month_date'</span><span class="s3">]</span>
+<span class="s3">)</span>
+
+<span class="s1">forecast_horizons </span><span class="s3">= {</span>
+    <span class="s4">'2 Years'</span><span class="s3">: </span><span class="s5">24</span><span class="s3">,</span>
+    <span class="s4">'3 Years'</span><span class="s3">: </span><span class="s5">36</span><span class="s3">,</span>
+    <span class="s4">'4 Years'</span><span class="s3">: </span><span class="s5">48</span><span class="s3">,</span>
+    <span class="s4">'5 Years'</span><span class="s3">: </span><span class="s5">60</span>
+<span class="s3">}</span>
+
+<span class="s2">for </span><span class="s1">label</span><span class="s3">, </span><span class="s1">months </span><span class="s2">in </span><span class="s1">forecast_horizons</span><span class="s3">.</span><span class="s1">items</span><span class="s3">():</span>
+    <span class="s1">cbsa_monthly</span><span class="s3">[</span><span class="s4">f'future_absorption_</span><span class="s2">{</span><span class="s1">months</span><span class="s2">}</span><span class="s4">m'</span><span class="s3">] = (</span>
+        <span class="s1">cbsa_monthly</span>
+        <span class="s3">.</span><span class="s1">groupby</span><span class="s3">([</span><span class="s4">'cbsa_title'</span><span class="s3">, </span><span class="s4">'price_band'</span><span class="s3">])[</span><span class="s4">'absorption_rate'</span><span class="s3">]</span>
+        <span class="s3">.</span><span class="s1">shift</span><span class="s3">(-</span><span class="s1">months</span><span class="s3">)</span>
+    <span class="s3">)</span><hr class="ls0"><span class="s0">#%% md 
+</span><span class="s1">## 8. Top markets by absorption velocity <hr class="ls0"></span><span class="s0">#%% 
+</span><span class="s1">latest_velocity </span><span class="s3">= </span><span class="s1">cbsa_monthly</span><span class="s3">[</span>
+    <span class="s1">cbsa_monthly</span><span class="s3">[</span><span class="s4">'month_date'</span><span class="s3">] == </span><span class="s1">latest_month</span>
+<span class="s3">].</span><span class="s1">copy</span><span class="s3">()</span>
+
+<span class="s1">top_velocity_markets </span><span class="s3">= </span><span class="s1">latest_velocity</span><span class="s3">.</span><span class="s1">sort_values</span><span class="s3">(</span>
+    <span class="s1">by</span><span class="s3">=</span><span class="s4">'absorption_velocity'</span><span class="s3">,</span>
+    <span class="s1">ascending</span><span class="s3">=</span><span class="s2">False</span>
+<span class="s3">)</span>
+
+<span class="s1">print</span><span class="s3">(</span><span class="s4">&quot;Top Markets by Absorption Velocity&quot;</span><span class="s3">)</span>
+<span class="s1">print</span><span class="s3">(</span><span class="s1">top_velocity_markets</span><span class="s3">[[</span>
+    <span class="s4">'cbsa_title'</span><span class="s3">,</span>
+    <span class="s4">'states'</span><span class="s3">,</span>
+    <span class="s4">'price_band'</span><span class="s3">,</span>
+    <span class="s4">'avg_median_sale_price'</span><span class="s3">,</span>
+    <span class="s4">'absorption_rate'</span><span class="s3">,</span>
+    <span class="s4">'absorption_12mo_avg'</span><span class="s3">,</span>
+    <span class="s4">'absorption_24mo_avg'</span><span class="s3">,</span>
+    <span class="s4">'absorption_velocity'</span><span class="s3">,</span>
+    <span class="s4">'months_of_supply'</span>
+<span class="s3">]].</span><span class="s1">head</span><span class="s3">(</span><span class="s5">20</span><span class="s3">))</span><hr class="ls0"><span class="s0">#%% md 
+</span><span class="s1">## 9. Historical absorption trend charts <hr class="ls0"></span><span class="s0">#%% 
+</span><span class="s1">top_market_rows </span><span class="s3">= </span><span class="s1">top_current_markets</span><span class="s3">.</span><span class="s1">head</span><span class="s3">(</span><span class="s5">5</span><span class="s3">)</span>
+
+<span class="s2">for </span><span class="s1">_</span><span class="s3">, </span><span class="s1">row </span><span class="s2">in </span><span class="s1">top_market_rows</span><span class="s3">.</span><span class="s1">iterrows</span><span class="s3">():</span>
+
+    <span class="s1">cbsa </span><span class="s3">= </span><span class="s1">row</span><span class="s3">[</span><span class="s4">'cbsa_title'</span><span class="s3">]</span>
+    <span class="s1">band </span><span class="s3">= </span><span class="s1">row</span><span class="s3">[</span><span class="s4">'price_band'</span><span class="s3">]</span>
+
+    <span class="s1">market_data </span><span class="s3">= </span><span class="s1">cbsa_monthly</span><span class="s3">[</span>
+        <span class="s3">(</span><span class="s1">cbsa_monthly</span><span class="s3">[</span><span class="s4">'cbsa_title'</span><span class="s3">] == </span><span class="s1">cbsa</span><span class="s3">) &amp;</span>
+        <span class="s3">(</span><span class="s1">cbsa_monthly</span><span class="s3">[</span><span class="s4">'price_band'</span><span class="s3">] == </span><span class="s1">band</span><span class="s3">)</span>
+    <span class="s3">].</span><span class="s1">copy</span><span class="s3">()</span>
+
+    <span class="s1">market_data </span><span class="s3">= </span><span class="s1">market_data</span><span class="s3">.</span><span class="s1">sort_values</span><span class="s3">(</span><span class="s4">'month_date'</span><span class="s3">)</span>
+
+    <span class="s1">plt</span><span class="s3">.</span><span class="s1">figure</span><span class="s3">(</span><span class="s1">figsize</span><span class="s3">=(</span><span class="s5">10</span><span class="s3">, </span><span class="s5">5</span><span class="s3">))</span>
+
+    <span class="s1">plt</span><span class="s3">.</span><span class="s1">plot</span><span class="s3">(</span>
+        <span class="s1">market_data</span><span class="s3">[</span><span class="s4">'month_date'</span><span class="s3">],</span>
+        <span class="s1">market_data</span><span class="s3">[</span><span class="s4">'absorption_rate'</span><span class="s3">],</span>
+        <span class="s1">marker</span><span class="s3">=</span><span class="s4">'o'</span><span class="s3">,</span>
+        <span class="s1">label</span><span class="s3">=</span><span class="s4">'Monthly Absorption'</span>
+    <span class="s3">)</span>
+
+    <span class="s1">plt</span><span class="s3">.</span><span class="s1">plot</span><span class="s3">(</span>
+        <span class="s1">market_data</span><span class="s3">[</span><span class="s4">'month_date'</span><span class="s3">],</span>
+        <span class="s1">market_data</span><span class="s3">[</span><span class="s4">'absorption_12mo_avg'</span><span class="s3">],</span>
+        <span class="s1">marker</span><span class="s3">=</span><span class="s4">'o'</span><span class="s3">,</span>
+        <span class="s1">label</span><span class="s3">=</span><span class="s4">'12-Month Rolling Average'</span>
+    <span class="s3">)</span>
+
+    <span class="s1">plt</span><span class="s3">.</span><span class="s1">title</span><span class="s3">(</span><span class="s4">f'Absorption Trend: </span><span class="s2">{</span><span class="s1">cbsa</span><span class="s2">} </span><span class="s4">| </span><span class="s2">{</span><span class="s1">band</span><span class="s2">}</span><span class="s4">'</span><span class="s3">)</span>
+    <span class="s1">plt</span><span class="s3">.</span><span class="s1">xlabel</span><span class="s3">(</span><span class="s4">'Month'</span><span class="s3">)</span>
+    <span class="s1">plt</span><span class="s3">.</span><span class="s1">ylabel</span><span class="s3">(</span><span class="s4">'Absorption Rate'</span><span class="s3">)</span>
+    <span class="s1">plt</span><span class="s3">.</span><span class="s1">legend</span><span class="s3">()</span>
+    <span class="s1">plt</span><span class="s3">.</span><span class="s1">tight_layout</span><span class="s3">()</span>
+    <span class="s1">plt</span><span class="s3">.</span><span class="s1">show</span><span class="s3">()</span><hr class="ls0"><span class="s0">#%% md 
+</span><span class="s1">## 10. Forecasting model: 2, 3, 4, and 5 years ahead 
+ 
+This section creates true future absorption forecasts by training models where the target is absorption rate 24, 36, 48, or 60 months after the current observation. 
+ <hr class="ls0"></span><span class="s0">#%% 
+# =====================================================</span>
+<span class="s0"># MODELING FEATURES AND MODEL CANDIDATES</span>
+<span class="s0"># =====================================================</span>
+
+<span class="s0"># These features describe the market at the current point in time.</span>
+<span class="s0"># The target created later is the absorption rate 24, 36, 48, or 60 months in the future.</span>
+<span class="s1">features </span><span class="s3">= [</span>
+    <span class="s4">'avg_median_sale_price'</span><span class="s3">,</span>
+    <span class="s4">'median_days_on_market'</span><span class="s3">,</span>
+    <span class="s4">'hotness_score'</span><span class="s3">,</span>
+    <span class="s4">'demand_score'</span><span class="s3">,</span>
+    <span class="s4">'supply_score'</span><span class="s3">,</span>
+    <span class="s4">'months_of_supply'</span><span class="s3">,</span>
+    <span class="s4">'absorption_12mo_avg'</span><span class="s3">,</span>
+    <span class="s4">'absorption_24mo_avg'</span><span class="s3">,</span>
+    <span class="s4">'absorption_velocity'</span>
+<span class="s3">]</span>
+
+<span class="s1">models </span><span class="s3">= {</span>
+    <span class="s4">'Linear Regression'</span><span class="s3">: </span><span class="s1">LinearRegression</span><span class="s3">(),</span>
+
+    <span class="s4">'Decision Tree'</span><span class="s3">: </span><span class="s1">DecisionTreeRegressor</span><span class="s3">(</span>
+        <span class="s1">max_depth</span><span class="s3">=</span><span class="s5">10</span><span class="s3">,</span>
+        <span class="s1">random_state</span><span class="s3">=</span><span class="s5">42</span>
+    <span class="s3">),</span>
+
+    <span class="s4">'Random Forest'</span><span class="s3">: </span><span class="s1">RandomForestRegressor</span><span class="s3">(</span>
+        <span class="s1">n_estimators</span><span class="s3">=</span><span class="s5">200</span><span class="s3">,</span>
+        <span class="s1">random_state</span><span class="s3">=</span><span class="s5">42</span>
+    <span class="s3">),</span>
+
+    <span class="s4">'Gradient Boosting'</span><span class="s3">: </span><span class="s1">GradientBoostingRegressor</span><span class="s3">(</span>
+        <span class="s1">n_estimators</span><span class="s3">=</span><span class="s5">200</span><span class="s3">,</span>
+        <span class="s1">random_state</span><span class="s3">=</span><span class="s5">42</span>
+    <span class="s3">)</span>
+<span class="s3">}</span>
+<hr class="ls0"><span class="s0">#%% 
+# =====================================================</span>
+<span class="s0"># TRAIN MODELS FOR 2, 3, 4, AND 5 YEAR FORECASTS</span>
+<span class="s0"># =====================================================</span>
+
+<span class="s1">forecast_targets </span><span class="s3">= {</span>
+    <span class="s4">'2 Years'</span><span class="s3">: </span><span class="s4">'future_absorption_24m'</span><span class="s3">,</span>
+    <span class="s4">'3 Years'</span><span class="s3">: </span><span class="s4">'future_absorption_36m'</span><span class="s3">,</span>
+    <span class="s4">'4 Years'</span><span class="s3">: </span><span class="s4">'future_absorption_48m'</span><span class="s3">,</span>
+    <span class="s4">'5 Years'</span><span class="s3">: </span><span class="s4">'future_absorption_60m'</span>
+<span class="s3">}</span>
+
+<span class="s1">all_model_results </span><span class="s3">= []</span>
+<span class="s1">all_market_predictions </span><span class="s3">= {}</span>
+<span class="s1">best_models_by_horizon </span><span class="s3">= {}</span>
+<span class="s1">feature_importance_by_horizon </span><span class="s3">= {}</span>
+
+<span class="s0"># Use the latest available market observations as the rows to forecast from.</span>
+<span class="s1">latest_month </span><span class="s3">= </span><span class="s1">cbsa_monthly</span><span class="s3">[</span><span class="s4">'month_date'</span><span class="s3">].</span><span class="s1">max</span><span class="s3">()</span>
+<span class="s1">latest_scoring_df </span><span class="s3">= </span><span class="s1">cbsa_monthly</span><span class="s3">[</span>
+    <span class="s1">cbsa_monthly</span><span class="s3">[</span><span class="s4">'month_date'</span><span class="s3">] == </span><span class="s1">latest_month</span>
+<span class="s3">].</span><span class="s1">copy</span><span class="s3">()</span>
+
+<span class="s2">for </span><span class="s1">horizon_label</span><span class="s3">, </span><span class="s1">target </span><span class="s2">in </span><span class="s1">forecast_targets</span><span class="s3">.</span><span class="s1">items</span><span class="s3">():</span>
+
+    <span class="s0"># These are descriptive columns we want to keep with the output.</span>
+    <span class="s0"># Do NOT repeat any columns that are already in the features list.</span>
+    <span class="s1">output_cols </span><span class="s3">= [</span>
+        <span class="s4">'cbsa_title'</span><span class="s3">,</span>
+        <span class="s4">'states'</span><span class="s3">,</span>
+        <span class="s4">'price_band'</span><span class="s3">,</span>
+        <span class="s4">'month_date'</span><span class="s3">,</span>
+        <span class="s4">'absorption_rate'</span>
+    <span class="s3">]</span>
+
+    <span class="s0"># Training rows must have current features and the future absorption target.</span>
+    <span class="s1">model_df </span><span class="s3">= </span><span class="s1">cbsa_monthly</span><span class="s3">[</span>
+        <span class="s1">features </span><span class="s3">+ [</span><span class="s1">target</span><span class="s3">] + </span><span class="s1">output_cols</span>
+    <span class="s3">].</span><span class="s1">dropna</span><span class="s3">().</span><span class="s1">copy</span><span class="s3">()</span>
+
+    <span class="s1">model_df </span><span class="s3">= </span><span class="s1">model_df</span><span class="s3">.</span><span class="s1">sort_values</span><span class="s3">(</span><span class="s4">'month_date'</span><span class="s3">)</span>
+
+    <span class="s1">X </span><span class="s3">= </span><span class="s1">model_df</span><span class="s3">[</span><span class="s1">features</span><span class="s3">]</span>
+    <span class="s1">y </span><span class="s3">= </span><span class="s1">model_df</span><span class="s3">[</span><span class="s1">target</span><span class="s3">]</span>
+
+    <span class="s0"># Time-based split: train on older observations, test on newer observations.</span>
+    <span class="s1">split_index </span><span class="s3">= </span><span class="s1">int</span><span class="s3">(</span><span class="s1">len</span><span class="s3">(</span><span class="s1">model_df</span><span class="s3">) * </span><span class="s5">0.80</span><span class="s3">)</span>
+
+    <span class="s1">X_train </span><span class="s3">= </span><span class="s1">X</span><span class="s3">.</span><span class="s1">iloc</span><span class="s3">[:</span><span class="s1">split_index</span><span class="s3">]</span>
+    <span class="s1">X_test </span><span class="s3">= </span><span class="s1">X</span><span class="s3">.</span><span class="s1">iloc</span><span class="s3">[</span><span class="s1">split_index</span><span class="s3">:]</span>
+    <span class="s1">y_train </span><span class="s3">= </span><span class="s1">y</span><span class="s3">.</span><span class="s1">iloc</span><span class="s3">[:</span><span class="s1">split_index</span><span class="s3">]</span>
+    <span class="s1">y_test </span><span class="s3">= </span><span class="s1">y</span><span class="s3">.</span><span class="s1">iloc</span><span class="s3">[</span><span class="s1">split_index</span><span class="s3">:]</span>
+
+    <span class="s1">horizon_results </span><span class="s3">= []</span>
+    <span class="s1">fitted_models </span><span class="s3">= {}</span>
+
+    <span class="s2">for </span><span class="s1">name</span><span class="s3">, </span><span class="s1">base_model </span><span class="s2">in </span><span class="s1">models</span><span class="s3">.</span><span class="s1">items</span><span class="s3">():</span>
+
+        <span class="s1">model </span><span class="s3">= </span><span class="s1">clone</span><span class="s3">(</span><span class="s1">base_model</span><span class="s3">)</span>
+        <span class="s1">model</span><span class="s3">.</span><span class="s1">fit</span><span class="s3">(</span><span class="s1">X_train</span><span class="s3">, </span><span class="s1">y_train</span><span class="s3">)</span>
+
+        <span class="s1">preds </span><span class="s3">= </span><span class="s1">model</span><span class="s3">.</span><span class="s1">predict</span><span class="s3">(</span><span class="s1">X_test</span><span class="s3">)</span>
+
+        <span class="s1">horizon_results</span><span class="s3">.</span><span class="s1">append</span><span class="s3">({</span>
+            <span class="s4">'Forecast_Horizon'</span><span class="s3">: </span><span class="s1">horizon_label</span><span class="s3">,</span>
+            <span class="s4">'Target_Column'</span><span class="s3">: </span><span class="s1">target</span><span class="s3">,</span>
+            <span class="s4">'Model'</span><span class="s3">: </span><span class="s1">name</span><span class="s3">,</span>
+            <span class="s4">'Train_Rows'</span><span class="s3">: </span><span class="s1">len</span><span class="s3">(</span><span class="s1">X_train</span><span class="s3">),</span>
+            <span class="s4">'Test_Rows'</span><span class="s3">: </span><span class="s1">len</span><span class="s3">(</span><span class="s1">X_test</span><span class="s3">),</span>
+            <span class="s4">'MAE'</span><span class="s3">: </span><span class="s1">mean_absolute_error</span><span class="s3">(</span><span class="s1">y_test</span><span class="s3">, </span><span class="s1">preds</span><span class="s3">),</span>
+            <span class="s4">'RMSE'</span><span class="s3">: </span><span class="s1">np</span><span class="s3">.</span><span class="s1">sqrt</span><span class="s3">(</span><span class="s1">mean_squared_error</span><span class="s3">(</span><span class="s1">y_test</span><span class="s3">, </span><span class="s1">preds</span><span class="s3">)),</span>
+            <span class="s4">'R2'</span><span class="s3">: </span><span class="s1">r2_score</span><span class="s3">(</span><span class="s1">y_test</span><span class="s3">, </span><span class="s1">preds</span><span class="s3">)</span>
+        <span class="s3">})</span>
+
+        <span class="s1">fitted_models</span><span class="s3">[</span><span class="s1">name</span><span class="s3">] = </span><span class="s1">model</span>
+
+    <span class="s1">horizon_results_df </span><span class="s3">= </span><span class="s1">pd</span><span class="s3">.</span><span class="s1">DataFrame</span><span class="s3">(</span><span class="s1">horizon_results</span><span class="s3">).</span><span class="s1">sort_values</span><span class="s3">(</span>
+        <span class="s1">by</span><span class="s3">=</span><span class="s4">'R2'</span><span class="s3">,</span>
+        <span class="s1">ascending</span><span class="s3">=</span><span class="s2">False</span>
+    <span class="s3">)</span>
+
+    <span class="s1">best_model_name </span><span class="s3">= </span><span class="s1">horizon_results_df</span><span class="s3">.</span><span class="s1">iloc</span><span class="s3">[</span><span class="s5">0</span><span class="s3">][</span><span class="s4">'Model'</span><span class="s3">]</span>
+
+    <span class="s0"># Refit the best model on all historical rows with known future outcomes.</span>
+    <span class="s1">best_model </span><span class="s3">= </span><span class="s1">clone</span><span class="s3">(</span><span class="s1">models</span><span class="s3">[</span><span class="s1">best_model_name</span><span class="s3">])</span>
+    <span class="s1">best_model</span><span class="s3">.</span><span class="s1">fit</span><span class="s3">(</span><span class="s1">X</span><span class="s3">, </span><span class="s1">y</span><span class="s3">)</span>
+
+    <span class="s1">best_models_by_horizon</span><span class="s3">[</span><span class="s1">horizon_label</span><span class="s3">] = {</span>
+        <span class="s4">'model_name'</span><span class="s3">: </span><span class="s1">best_model_name</span><span class="s3">,</span>
+        <span class="s4">'model'</span><span class="s3">: </span><span class="s1">best_model</span><span class="s3">,</span>
+        <span class="s4">'target'</span><span class="s3">: </span><span class="s1">target</span>
+    <span class="s3">}</span>
+
+    <span class="s0"># Score the latest month to forecast future absorption from today's/latest conditions.</span>
+    <span class="s1">scoring_df </span><span class="s3">= </span><span class="s1">latest_scoring_df</span><span class="s3">[</span>
+        <span class="s1">features </span><span class="s3">+ </span><span class="s1">output_cols</span>
+    <span class="s3">].</span><span class="s1">dropna</span><span class="s3">().</span><span class="s1">copy</span><span class="s3">()</span>
+
+    <span class="s1">prediction_col </span><span class="s3">= </span><span class="s4">f'predicted_absorption_</span><span class="s2">{</span><span class="s1">horizon_label</span><span class="s2">}</span><span class="s4">'</span>
+
+    <span class="s1">scoring_df</span><span class="s3">[</span><span class="s1">prediction_col</span><span class="s3">] = </span><span class="s1">best_model</span><span class="s3">.</span><span class="s1">predict</span><span class="s3">(</span><span class="s1">scoring_df</span><span class="s3">[</span><span class="s1">features</span><span class="s3">])</span>
+    <span class="s1">scoring_df</span><span class="s3">[</span><span class="s4">'Forecast_Horizon'</span><span class="s3">] = </span><span class="s1">horizon_label</span>
+    <span class="s1">scoring_df</span><span class="s3">[</span><span class="s4">'Best_Model'</span><span class="s3">] = </span><span class="s1">best_model_name</span>
+
+    <span class="s1">market_predictions </span><span class="s3">= </span><span class="s1">scoring_df</span><span class="s3">[</span>
+        <span class="s3">[</span>
+            <span class="s4">'Forecast_Horizon'</span><span class="s3">,</span>
+            <span class="s4">'Best_Model'</span><span class="s3">,</span>
+            <span class="s4">'cbsa_title'</span><span class="s3">,</span>
+            <span class="s4">'states'</span><span class="s3">,</span>
+            <span class="s4">'price_band'</span><span class="s3">,</span>
+            <span class="s4">'month_date'</span><span class="s3">,</span>
+            <span class="s4">'absorption_rate'</span>
+        <span class="s3">] + </span><span class="s1">features </span><span class="s3">+ [</span><span class="s1">prediction_col</span><span class="s3">]</span>
+    <span class="s3">].</span><span class="s1">copy</span><span class="s3">()</span>
+
+    <span class="s1">market_predictions </span><span class="s3">= </span><span class="s1">market_predictions</span><span class="s3">.</span><span class="s1">sort_values</span><span class="s3">(</span>
+        <span class="s1">by</span><span class="s3">=</span><span class="s1">prediction_col</span><span class="s3">,</span>
+        <span class="s1">ascending</span><span class="s3">=</span><span class="s2">False</span>
+    <span class="s3">)</span>
+
+    <span class="s1">all_model_results</span><span class="s3">.</span><span class="s1">extend</span><span class="s3">(</span><span class="s1">horizon_results</span><span class="s3">)</span>
+    <span class="s1">all_market_predictions</span><span class="s3">[</span><span class="s1">horizon_label</span><span class="s3">] = </span><span class="s1">market_predictions</span>
+
+    <span class="s0"># Store feature importance if the best model supports it.</span>
+    <span class="s2">if </span><span class="s1">hasattr</span><span class="s3">(</span><span class="s1">best_model</span><span class="s3">, </span><span class="s4">'feature_importances_'</span><span class="s3">):</span>
+        <span class="s1">importance </span><span class="s3">= </span><span class="s1">pd</span><span class="s3">.</span><span class="s1">DataFrame</span><span class="s3">({</span>
+            <span class="s4">'Forecast_Horizon'</span><span class="s3">: </span><span class="s1">horizon_label</span><span class="s3">,</span>
+            <span class="s4">'Best_Model'</span><span class="s3">: </span><span class="s1">best_model_name</span><span class="s3">,</span>
+            <span class="s4">'Feature'</span><span class="s3">: </span><span class="s1">features</span><span class="s3">,</span>
+            <span class="s4">'Importance'</span><span class="s3">: </span><span class="s1">best_model</span><span class="s3">.</span><span class="s1">feature_importances_</span>
+        <span class="s3">}).</span><span class="s1">sort_values</span><span class="s3">(</span>
+            <span class="s1">by</span><span class="s3">=</span><span class="s4">'Importance'</span><span class="s3">,</span>
+            <span class="s1">ascending</span><span class="s3">=</span><span class="s2">False</span>
+        <span class="s3">)</span>
+
+        <span class="s1">feature_importance_by_horizon</span><span class="s3">[</span><span class="s1">horizon_label</span><span class="s3">] = </span><span class="s1">importance</span>
+<hr class="ls0"><span class="s0">#%% md 
+</span><span class="s1">## 11. Model comparison by forecast horizon <hr class="ls0"></span><span class="s0">#%% 
+</span><span class="s1">all_model_results_df </span><span class="s3">= </span><span class="s1">pd</span><span class="s3">.</span><span class="s1">DataFrame</span><span class="s3">(</span><span class="s1">all_model_results</span><span class="s3">).</span><span class="s1">sort_values</span><span class="s3">(</span>
+    <span class="s1">by</span><span class="s3">=[</span><span class="s4">'Forecast_Horizon'</span><span class="s3">, </span><span class="s4">'R2'</span><span class="s3">],</span>
+    <span class="s1">ascending</span><span class="s3">=[</span><span class="s2">True</span><span class="s3">, </span><span class="s2">False</span><span class="s3">]</span>
+<span class="s3">)</span>
+
+<span class="s1">display</span><span class="s3">(</span><span class="s1">all_model_results_df</span><span class="s3">)</span>
+<hr class="ls0"><span class="s0">#%% md 
+</span><span class="s1">## 12. Top forecasted markets for each horizon <hr class="ls0"></span><span class="s0">#%% 
+</span><span class="s2">for </span><span class="s1">horizon_label</span><span class="s3">, </span><span class="s1">predictions_df </span><span class="s2">in </span><span class="s1">all_market_predictions</span><span class="s3">.</span><span class="s1">items</span><span class="s3">():</span>
+
+    <span class="s1">prediction_col </span><span class="s3">= </span><span class="s4">f'predicted_absorption_</span><span class="s2">{</span><span class="s1">horizon_label</span><span class="s2">}</span><span class="s4">'</span>
+
+    <span class="s1">print</span><span class="s3">(</span><span class="s4">f&quot;</span><span class="s2">\n</span><span class="s4">Top Predicted Markets - </span><span class="s2">{</span><span class="s1">horizon_label</span><span class="s2">}</span><span class="s4">&quot;</span><span class="s3">)</span>
+    <span class="s1">display</span><span class="s3">(</span><span class="s1">predictions_df</span><span class="s3">[[</span>
+        <span class="s4">'cbsa_title'</span><span class="s3">,</span>
+        <span class="s4">'states'</span><span class="s3">,</span>
+        <span class="s4">'price_band'</span><span class="s3">,</span>
+        <span class="s4">'month_date'</span><span class="s3">,</span>
+        <span class="s4">'absorption_rate'</span><span class="s3">,</span>
+        <span class="s4">'months_of_supply'</span><span class="s3">,</span>
+        <span class="s4">'absorption_velocity'</span><span class="s3">,</span>
+        <span class="s1">prediction_col</span><span class="s3">,</span>
+        <span class="s4">'Best_Model'</span>
+    <span class="s3">]].</span><span class="s1">head</span><span class="s3">(</span><span class="s5">20</span><span class="s3">))</span>
+<hr class="ls0"><span class="s0">#%% md 
+</span><span class="s1">## 13. Combined final forecast ranking <hr class="ls0"></span><span class="s0">#%% 
+# Combine all forecast horizons into one table.</span>
+<span class="s1">combined_forecasts </span><span class="s3">= []</span>
+
+<span class="s2">for </span><span class="s1">horizon_label</span><span class="s3">, </span><span class="s1">predictions_df </span><span class="s2">in </span><span class="s1">all_market_predictions</span><span class="s3">.</span><span class="s1">items</span><span class="s3">():</span>
+    <span class="s1">prediction_col </span><span class="s3">= </span><span class="s4">f'predicted_absorption_</span><span class="s2">{</span><span class="s1">horizon_label</span><span class="s2">}</span><span class="s4">'</span>
+
+    <span class="s1">temp </span><span class="s3">= </span><span class="s1">predictions_df</span><span class="s3">.</span><span class="s1">rename</span><span class="s3">(</span>
+        <span class="s1">columns</span><span class="s3">={</span><span class="s1">prediction_col</span><span class="s3">: </span><span class="s4">'predicted_future_absorption_rate'</span><span class="s3">}</span>
+    <span class="s3">).</span><span class="s1">copy</span><span class="s3">()</span>
+
+    <span class="s1">combined_forecasts</span><span class="s3">.</span><span class="s1">append</span><span class="s3">(</span><span class="s1">temp</span><span class="s3">)</span>
+
+<span class="s1">combined_forecasts </span><span class="s3">= </span><span class="s1">pd</span><span class="s3">.</span><span class="s1">concat</span><span class="s3">(</span>
+    <span class="s1">combined_forecasts</span><span class="s3">,</span>
+    <span class="s1">ignore_index</span><span class="s3">=</span><span class="s2">True</span>
+<span class="s3">)</span>
+
+<span class="s1">combined_forecasts </span><span class="s3">= </span><span class="s1">combined_forecasts</span><span class="s3">.</span><span class="s1">sort_values</span><span class="s3">(</span>
+    <span class="s1">by</span><span class="s3">=[</span><span class="s4">'Forecast_Horizon'</span><span class="s3">, </span><span class="s4">'predicted_future_absorption_rate'</span><span class="s3">],</span>
+    <span class="s1">ascending</span><span class="s3">=[</span><span class="s2">True</span><span class="s3">, </span><span class="s2">False</span><span class="s3">]</span>
+<span class="s3">)</span>
+
+<span class="s1">display</span><span class="s3">(</span><span class="s1">combined_forecasts</span><span class="s3">.</span><span class="s1">head</span><span class="s3">(</span><span class="s5">40</span><span class="s3">))</span>
+<hr class="ls0"><span class="s0">#%% md 
+</span><span class="s1">## 14. Feature importance by horizon <hr class="ls0"></span><span class="s0">#%% 
+</span><span class="s2">for </span><span class="s1">horizon_label</span><span class="s3">, </span><span class="s1">importance </span><span class="s2">in </span><span class="s1">feature_importance_by_horizon</span><span class="s3">.</span><span class="s1">items</span><span class="s3">():</span>
+
+    <span class="s1">best_model_name </span><span class="s3">= </span><span class="s1">importance</span><span class="s3">[</span><span class="s4">'Best_Model'</span><span class="s3">].</span><span class="s1">iloc</span><span class="s3">[</span><span class="s5">0</span><span class="s3">]</span>
+
+    <span class="s1">print</span><span class="s3">(</span><span class="s4">f&quot;</span><span class="s2">\n</span><span class="s4">Feature Importance - </span><span class="s2">{</span><span class="s1">horizon_label</span><span class="s2">} </span><span class="s4">(</span><span class="s2">{</span><span class="s1">best_model_name</span><span class="s2">}</span><span class="s4">)&quot;</span><span class="s3">)</span>
+    <span class="s1">display</span><span class="s3">(</span><span class="s1">importance</span><span class="s3">)</span>
+
+    <span class="s1">plt</span><span class="s3">.</span><span class="s1">figure</span><span class="s3">(</span><span class="s1">figsize</span><span class="s3">=(</span><span class="s5">8</span><span class="s3">, </span><span class="s5">5</span><span class="s3">))</span>
+
+    <span class="s1">plt</span><span class="s3">.</span><span class="s1">barh</span><span class="s3">(</span>
+        <span class="s1">importance</span><span class="s3">[</span><span class="s4">'Feature'</span><span class="s3">],</span>
+        <span class="s1">importance</span><span class="s3">[</span><span class="s4">'Importance'</span><span class="s3">]</span>
+    <span class="s3">)</span>
+
+    <span class="s1">plt</span><span class="s3">.</span><span class="s1">gca</span><span class="s3">().</span><span class="s1">invert_yaxis</span><span class="s3">()</span>
+    <span class="s1">plt</span><span class="s3">.</span><span class="s1">xlabel</span><span class="s3">(</span><span class="s4">'Importance'</span><span class="s3">)</span>
+    <span class="s1">plt</span><span class="s3">.</span><span class="s1">title</span><span class="s3">(</span><span class="s4">f'</span><span class="s2">{</span><span class="s1">horizon_label</span><span class="s2">} </span><span class="s4">Forecast Feature Importance (</span><span class="s2">{</span><span class="s1">best_model_name</span><span class="s2">}</span><span class="s4">)'</span><span class="s3">)</span>
+    <span class="s1">plt</span><span class="s3">.</span><span class="s1">tight_layout</span><span class="s3">()</span>
+    <span class="s1">plt</span><span class="s3">.</span><span class="s1">show</span><span class="s3">()</span>
+<hr class="ls0"><span class="s0">#%% md 
+</span><span class="s1">## 15. Optional county drill-down within top CBSAs <hr class="ls0"></span><span class="s0">#%% 
+# This keeps county-level detail for explaining which counties contribute to top-performing CBSAs.</span>
+<span class="s0"># Use the top 10 CBSAs from the 2-year forecast as the drill-down list.</span>
+
+<span class="s1">two_year_predictions </span><span class="s3">= </span><span class="s1">all_market_predictions</span><span class="s3">[</span><span class="s4">'2 Years'</span><span class="s3">]</span>
+<span class="s1">two_year_prediction_col </span><span class="s3">= </span><span class="s4">'predicted_absorption_2 Years'</span>
+
+<span class="s1">top_cbsa_list </span><span class="s3">= </span><span class="s1">two_year_predictions</span><span class="s3">[</span><span class="s4">'cbsa_title'</span><span class="s3">].</span><span class="s1">head</span><span class="s3">(</span><span class="s5">10</span><span class="s3">).</span><span class="s1">unique</span><span class="s3">()</span>
+
+<span class="s1">county_drilldown </span><span class="s3">= </span><span class="s1">target_df</span><span class="s3">[</span>
+    <span class="s1">target_df</span><span class="s3">[</span><span class="s4">'cbsa_title'</span><span class="s3">].</span><span class="s1">isin</span><span class="s3">(</span><span class="s1">top_cbsa_list</span><span class="s3">)</span>
+<span class="s3">].</span><span class="s1">copy</span><span class="s3">()</span>
+
+<span class="s1">county_drilldown_summary </span><span class="s3">= </span><span class="s1">county_drilldown</span><span class="s3">.</span><span class="s1">groupby</span><span class="s3">(</span>
+    <span class="s3">[</span><span class="s4">'cbsa_title'</span><span class="s3">, </span><span class="s4">'county_name'</span><span class="s3">, </span><span class="s4">'state'</span><span class="s3">, </span><span class="s4">'price_band'</span><span class="s3">],</span>
+    <span class="s1">observed</span><span class="s3">=</span><span class="s2">True</span><span class="s3">,</span>
+    <span class="s1">as_index</span><span class="s3">=</span><span class="s2">False</span>
+<span class="s3">).</span><span class="s1">agg</span><span class="s3">(</span>
+    <span class="s1">avg_absorption_rate</span><span class="s3">=(</span><span class="s4">'absorption_rate'</span><span class="s3">, </span><span class="s4">'mean'</span><span class="s3">),</span>
+    <span class="s1">avg_months_of_supply</span><span class="s3">=(</span><span class="s4">'months_of_supply'</span><span class="s3">, </span><span class="s4">'mean'</span><span class="s3">),</span>
+    <span class="s1">avg_sale_price</span><span class="s3">=(</span><span class="s4">'MEDIAN_SALE_PRICE'</span><span class="s3">, </span><span class="s4">'mean'</span><span class="s3">),</span>
+    <span class="s1">avg_active_listings</span><span class="s3">=(</span><span class="s4">'ACTIVE_LISTINGS'</span><span class="s3">, </span><span class="s4">'mean'</span><span class="s3">),</span>
+    <span class="s1">avg_homes_sold</span><span class="s3">=(</span><span class="s4">'ADJUSTED_AVERAGE_HOMES_SOLD'</span><span class="s3">, </span><span class="s4">'mean'</span><span class="s3">)</span>
+<span class="s3">)</span>
+
+<span class="s1">county_drilldown_summary </span><span class="s3">= </span><span class="s1">county_drilldown_summary</span><span class="s3">.</span><span class="s1">sort_values</span><span class="s3">(</span>
+    <span class="s1">by</span><span class="s3">=</span><span class="s4">'avg_absorption_rate'</span><span class="s3">,</span>
+    <span class="s1">ascending</span><span class="s3">=</span><span class="s2">False</span>
+<span class="s3">)</span>
+
+<span class="s1">display</span><span class="s3">(</span><span class="s1">county_drilldown_summary</span><span class="s3">.</span><span class="s1">head</span><span class="s3">(</span><span class="s5">20</span><span class="s3">))</span>
+<hr class="ls0"><span class="s0">#%% md 
+</span><span class="s1">## 16. Optional exports <hr class="ls0"></span><span class="s0">#%% 
+# Uncomment these lines if you want to export the final outputs.</span>
+
+<span class="s0"># all_model_results_df.to_csv('forecast_model_comparison_by_horizon.csv', index=False)</span>
+<span class="s0"># combined_forecasts.to_csv('predicted_fastest_moving_markets_2_to_5_years.csv', index=False)</span>
+<span class="s0"># county_drilldown_summary.to_csv('county_drilldown_for_top_cbsa_markets.csv', index=False)</span>
+</pre>
+</body>
+</html>
